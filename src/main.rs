@@ -23,7 +23,9 @@ struct Cli {
     #[arg(long)]
     repo_url: String,
     #[arg(long)]
-    commit: Option<String>,
+    head: Option<String>,
+    #[arg(long)]
+    base: String,
 }
 
 #[tokio::main]
@@ -49,7 +51,7 @@ async fn main() -> anyhow::Result<()> {
     println!("Clone result: {}", clone_result);
 
     // Checkout specific commit if provided
-    if let Some(commit) = &args.commit {
+    if let Some(commit) = &args.head {
         println!("Checking out commit: {}", commit);
         let checkout_command = vec!["git".to_string(), "checkout".to_string(), commit.clone()];
         let checkout_result = container_manager
@@ -65,27 +67,34 @@ async fn main() -> anyhow::Result<()> {
         .base_url(&args.base_url)
         .build()?;
 
+    println!("Getting git diff from base: {}", args.base);
+    let diff_command = vec![
+        "git".to_string(),
+        "--no-pager".to_string(),
+        "diff".to_string(),
+        args.base.clone(),
+    ];
+    let diff_output = container_manager
+        .execute_command(&diff_command)
+        .await
+        .context("Failed to get git diff")?;
+
     let agent = openai_client
         .completion_model(&args.model)
         .completions_api()
         .into_agent_builder()
         .tool(ExecuteCommandTool::with_container(container_manager))
-        .preamble("You are a code review assistant. The git repository has already been cloned to /workspace. You can explore the codebase and use git commands to checkout different commits or branches if needed. Feel free to run unit tests or available static analysis tools. Your job is to audit the state of the codebase.")
+        .preamble("You are a code review assistant. The git repository under review has been cloned to /workspace. You can explore the codebase to get context on the provided changes. You can run arbitrary commands like `grep`, `cargo doc` or similar. Please provide a succinct review.")
         .build();
 
-    let repo_info = if let Some(commit) = &args.commit {
-        format!(
-            "Repository {} has been cloned and checked out to commit {}",
-            args.repo_url, commit
-        )
-    } else {
-        format!(
-            "Repository {} has been cloned to the latest commit",
-            args.repo_url
-        )
-    };
+    // Get the git diff output
 
-    let request = PromptRequest::new(&agent, &repo_info).multi_turn(99);
+    let prompt = format!(
+        "Please review the following git diff output:\n\n{}",
+        diff_output
+    );
+
+    let request = PromptRequest::new(&agent, &prompt).multi_turn(999);
     // Prompt the model and print its response
     let response = request.await?;
 
