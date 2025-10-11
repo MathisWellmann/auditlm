@@ -10,20 +10,34 @@ use rig::{agent::PromptRequest, client::CompletionClient};
 
 use crate::{container::ContainerManager, tools::execute::ExecuteCommandTool};
 
+/// Command-line arguments for the auditlm tool
 #[derive(Debug, Parser)]
 struct Cli {
+    /// The OpenAI model to use for code review (e.g., "gpt-4", "gpt-3.5-turbo")
     #[arg(long)]
     model: String,
+
+    /// The base URL for the OpenAI-compatible API endpoint
     #[arg(long)]
     base_url: String,
+
+    /// Optional API key for authentication to a cloud provider. If not provided, an empty string will be used for e.g. a local llama.cpp service.
     #[arg(long)]
-    api_key: String,
+    api_key: Option<String>,
+
+    /// Path to the Docker socket for container management
     #[arg(long)]
     socket: String,
+
+    /// URL of the Git repository to clone and analyze
     #[arg(long)]
     repo_url: String,
+
+    /// Optional specific commit hash or branch to checkout after cloning
     #[arg(long)]
     head: Option<String>,
+
+    /// The base Git reference to compare against when generating the diff (e.g., branch name, commit hash)
     #[arg(long)]
     base: String,
 }
@@ -63,7 +77,7 @@ async fn main() -> anyhow::Result<()> {
 
     let container_manager = Arc::new(container_manager);
 
-    let openai_client = openai::Client::builder(&args.api_key)
+    let openai_client = openai::Client::builder(&args.api_key.unwrap_or(String::new()))
         .base_url(&args.base_url)
         .build()?;
 
