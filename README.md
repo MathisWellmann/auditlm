@@ -7,8 +7,20 @@ No real docs currently, but it seems to mostly work. I'd like to integrate this 
 ## Usage:
 
 ```
-cargo run -- --model 'model.gguf' --socket '/run/user/1000/podman/podman.sock' --base-url 'http://127.0.0.1:11800' --repo-url 'https://github.com/ellenhp/auditlm' --commit 53b29c6091f5d6598a057b8af51aab8436162e0c --base 7322b9f1de4591e2ebc3277d257487ac59195906
+cargo run -- --model 'model.gguf' --socket '/run/user/1000/podman/podman.sock' --base-url 'http://127.0.0.1:11800' --repo-url 'https://github.com/ellenhp/auditlm' --head 53b29c6091f5d6598a057b8af51aab8436162e0c --base 7322b9f1de4591e2ebc3277d257487ac59195906 --image 'rust:1-trixie'
 ```
+
+### Required Arguments:
+- `--model`: The model to use for code review
+- `--socket`: Path to the Docker/Podman socket
+- `--base-url`: The base URL for the OpenAI-compatible API endpoint
+- `--repo-url`: URL of the Git repository to analyze
+- `--base`: The base Git reference to compare against
+- `--image`: Docker image to use for analysis (e.g., "rust:1-trixie", "ubuntu:22.04")
+
+### Optional Arguments:
+- `--api-key`: API key for authentication (optional, uses empty string for local models)
+- `--head`: Specific commit hash or branch to checkout after cloning
 
 # Example output
 

@@ -40,6 +40,10 @@ struct Cli {
     /// The base Git reference to compare against when generating the diff (e.g., branch name, commit hash)
     #[arg(long)]
     base: String,
+
+    /// Docker image to use for analysis (e.g., "rust:1-trixie", "ubuntu:22.04")
+    #[arg(long)]
+    image: String,
 }
 
 #[tokio::main]
@@ -48,7 +52,9 @@ async fn main() -> anyhow::Result<()> {
     let args = Cli::parse();
 
     let mut container_manager = ContainerManager::new(&args.socket).await?;
-    container_manager.create_analysis_container().await?;
+    container_manager
+        .create_analysis_container(&args.image)
+        .await?;
 
     // Clone the repository into the container
     println!("Cloning repository: {}", args.repo_url);

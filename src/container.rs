@@ -33,7 +33,7 @@ impl ContainerManager {
     }
 
     /// Create a new analysis container with comprehensive tools
-    pub async fn create_analysis_container(&mut self) -> Result<()> {
+    pub async fn create_analysis_container(&mut self, image: &str) -> Result<()> {
         // Create a temporary directory for mounting
         let temp_dir = TempDir::new()?;
         let temp_path = temp_dir.path();
@@ -44,7 +44,7 @@ impl ContainerManager {
         info!("Creating analysis container: {}", container_name);
 
         // Pull the base image if it doesn't exist
-        self.pull_image("rust:1-trixie").await?;
+        self.pull_image(image).await?;
 
         // Create container configuration
         let create_options = Some(CreateContainerOptions {
@@ -58,7 +58,7 @@ impl ContainerManager {
         }
 
         let config = Config {
-            image: Some("rust:1-trixie"),
+            image: Some(image),
             host_config: Some(bollard::models::HostConfig {
                 binds: Some(binds),
                 auto_remove: Some(true),
