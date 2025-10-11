@@ -199,15 +199,3 @@ impl ContainerManager {
         self.container_id.as_deref()
     }
 }
-
-impl Drop for ContainerManager {
-    fn drop(&mut self) {
-        // Note: We can't await in drop, so cleanup should be called explicitly
-        if let Some(container_id) = &self.container_id {
-            debug!(
-                "Container manager dropped, container {} may still be running",
-                container_id
-            );
-        }
-    }
-}
