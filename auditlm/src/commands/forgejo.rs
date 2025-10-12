@@ -192,8 +192,10 @@ pub async fn handle_forgejo_command(args: ForgejoArgs) -> anyhow::Result<()> {
         .completion_model(&args.model)
         .completions_api()
         .into_agent_builder()
-        .preamble("You are a code review assistant with access to Forgejo repository tools. To access the diff for the pull request under review, you should call the repoGetPullRequest tool. The git repository under review has been cloned to /workspace. You can explore the codebase to get context on on the change. You can run arbitrary commands like `grep`, `cargo doc` or similar in the repository. Please write a succinct review and send it to the forgejo server using your repoCreatePullReview tool.")
-        .tool(ExecuteCommandTool::with_container(Arc::new(container_manager)));
+        .preamble(include_str!("../../prompts/forgejo_prompt.txt"))
+        .tool(ExecuteCommandTool::with_container(Arc::new(
+            container_manager,
+        )));
 
     let tool_allowlist = vec![
         "repoGetPullRequest".to_string(),
@@ -201,6 +203,9 @@ pub async fn handle_forgejo_command(args: ForgejoArgs) -> anyhow::Result<()> {
         "repoGetPullRequestFiles".to_string(),
         "repoCreatePullReview".to_string(),
         "repoCreatePullReviewComment".to_string(),
+        "repoListPullReview".to_string(),
+        "repoGetPullReview".to_string(),
+        "repoGetPullReviewComments".to_string(),
     ];
     // Add MCP tools to the agent
     let agent = tools
@@ -243,37 +248,38 @@ async fn start_local_mcp_server_with_openapi(
     println!("OpenAPI MCP server listening on: {}", server_addr);
 
     let handle = tokio::spawn(async move {
-        // Accept only one connection for now
-        match listener.accept().await {
-            Ok((stream, addr)) => {
-                println!("Client connected to OpenAPI MCP server from: {}", addr);
-                let server_clone = server.clone();
+        loop {
+            match listener.accept().await {
+                Ok((stream, addr)) => {
+                    println!("Client connected to OpenAPI MCP server from: {}", addr);
+                    let server_clone = server.clone();
 
-                // Set TCP keepalive to prevent connection drops
-                if let Ok(socket) = stream.peer_addr() {
-                    println!("Client socket address: {}", socket);
-                }
+                    // Set TCP keepalive to prevent connection drops
+                    if let Ok(socket) = stream.peer_addr() {
+                        println!("Client socket address: {}", socket);
+                    }
 
-                // Use the serve_with_ct method from ServiceExt trait
-                let ct = tokio_util::sync::CancellationToken::new();
-                match server_clone.serve_with_ct(stream, ct.clone()).await {
-                    Ok(running_service) => {
-                        println!("OpenAPI MCP server successfully started");
-                        // Keep the service running
-                        if let Err(e) = running_service.waiting().await {
-                            println!("OpenAPI MCP server finished with error: {}", e);
-                        } else {
-                            println!("OpenAPI MCP server finished normally");
+                    // Use the serve_with_ct method from ServiceExt trait
+                    let ct = tokio_util::sync::CancellationToken::new();
+                    match server_clone.serve_with_ct(stream, ct.clone()).await {
+                        Ok(running_service) => {
+                            println!("OpenAPI MCP server successfully started");
+                            // Keep the service running
+                            if let Err(e) = running_service.waiting().await {
+                                println!("OpenAPI MCP server finished with error: {}", e);
+                            } else {
+                                println!("OpenAPI MCP server finished normally");
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("OpenAPI MCP server error: {}", e);
                         }
                     }
-                    Err(e) => {
-                        eprintln!("OpenAPI MCP server error: {}", e);
-                    }
+                    println!("OpenAPI MCP server connection closed");
                 }
-                println!("OpenAPI MCP server connection closed");
-            }
-            Err(e) => {
-                eprintln!("Failed to accept connection: {}", e);
+                Err(e) => {
+                    eprintln!("Failed to accept connection: {}", e);
+                }
             }
         }
     });
