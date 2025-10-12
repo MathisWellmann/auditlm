@@ -1,7 +1,10 @@
+use std::env;
 use std::sync::Arc;
 
 use anyhow::Context;
 use clap::Parser;
+use http::HeaderMap;
+use http::header::AUTHORIZATION;
 use rig::providers::openai;
 use rig::{agent::PromptRequest, client::CompletionClient};
 use rmcp::{
@@ -73,23 +76,6 @@ async fn clone_repository(
     Ok(())
 }
 
-async fn get_git_diff(base: &str, container_manager: &ContainerManager) -> anyhow::Result<String> {
-    println!("Getting git diff from base: {}", base);
-    let diff_command = vec![
-        "git".to_string(),
-        "--no-pager".to_string(),
-        "diff".to_string(),
-        base.to_string(),
-    ];
-
-    let diff_output = container_manager
-        .execute_command(&diff_command)
-        .await
-        .context("Failed to get git diff")?;
-
-    Ok(diff_output)
-}
-
 pub async fn handle_forgejo_command(args: ForgejoArgs) -> anyhow::Result<()> {
     // Initialize container manager
     let mut container_manager = ContainerManager::new(&args.socket).await?;
@@ -103,9 +89,22 @@ pub async fn handle_forgejo_command(args: ForgejoArgs) -> anyhow::Result<()> {
     // Create OpenAPI server with Forgejo spec
     let forgejo_base_url = Url::parse(&args.forgejo_url).context("Failed to parse Forgejo URL")?;
 
+    let forgejo_token =
+        env::var("FORGEJO_TOKEN").expect("FORGEJO_TOKEN environment variable not set");
+
+    // Create authorization header
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        AUTHORIZATION,
+        format!("token {}", forgejo_token)
+            .parse()
+            .context("Failed to parse authorization header")?,
+    );
+
     let openapi_server = Server::builder()
         .openapi_spec(openapi_spec)
         .base_url(forgejo_base_url)
+        .default_headers(headers)
         .build();
 
     // Load tools from the OpenAPI spec
