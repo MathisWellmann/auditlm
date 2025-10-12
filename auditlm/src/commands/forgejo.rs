@@ -248,37 +248,38 @@ async fn start_local_mcp_server_with_openapi(
     println!("OpenAPI MCP server listening on: {}", server_addr);
 
     let handle = tokio::spawn(async move {
-        // Accept only one connection for now
-        match listener.accept().await {
-            Ok((stream, addr)) => {
-                println!("Client connected to OpenAPI MCP server from: {}", addr);
-                let server_clone = server.clone();
+        loop {
+            match listener.accept().await {
+                Ok((stream, addr)) => {
+                    println!("Client connected to OpenAPI MCP server from: {}", addr);
+                    let server_clone = server.clone();
 
-                // Set TCP keepalive to prevent connection drops
-                if let Ok(socket) = stream.peer_addr() {
-                    println!("Client socket address: {}", socket);
-                }
+                    // Set TCP keepalive to prevent connection drops
+                    if let Ok(socket) = stream.peer_addr() {
+                        println!("Client socket address: {}", socket);
+                    }
 
-                // Use the serve_with_ct method from ServiceExt trait
-                let ct = tokio_util::sync::CancellationToken::new();
-                match server_clone.serve_with_ct(stream, ct.clone()).await {
-                    Ok(running_service) => {
-                        println!("OpenAPI MCP server successfully started");
-                        // Keep the service running
-                        if let Err(e) = running_service.waiting().await {
-                            println!("OpenAPI MCP server finished with error: {}", e);
-                        } else {
-                            println!("OpenAPI MCP server finished normally");
+                    // Use the serve_with_ct method from ServiceExt trait
+                    let ct = tokio_util::sync::CancellationToken::new();
+                    match server_clone.serve_with_ct(stream, ct.clone()).await {
+                        Ok(running_service) => {
+                            println!("OpenAPI MCP server successfully started");
+                            // Keep the service running
+                            if let Err(e) = running_service.waiting().await {
+                                println!("OpenAPI MCP server finished with error: {}", e);
+                            } else {
+                                println!("OpenAPI MCP server finished normally");
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("OpenAPI MCP server error: {}", e);
                         }
                     }
-                    Err(e) => {
-                        eprintln!("OpenAPI MCP server error: {}", e);
-                    }
+                    println!("OpenAPI MCP server connection closed");
                 }
-                println!("OpenAPI MCP server connection closed");
-            }
-            Err(e) => {
-                eprintln!("Failed to accept connection: {}", e);
+                Err(e) => {
+                    eprintln!("Failed to accept connection: {}", e);
+                }
             }
         }
     });
