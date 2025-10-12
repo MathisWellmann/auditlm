@@ -96,7 +96,7 @@ pub async fn handle_git_command(args: GitArgs) -> anyhow::Result<()> {
         .completions_api()
         .into_agent_builder()
         .tool(ExecuteCommandTool::with_container(container_manager))
-        .preamble("You are a code review assistant. The git repository under review has been cloned to /workspace. You can explore the codebase to get context on the provided changes. You can run arbitrary commands like `grep`, `cargo doc` or similar. Please provide a succinct review.")
+        .preamble(include_str!("../../prompts/git_prompt.txt"))
         .build();
 
     // Get the git diff output

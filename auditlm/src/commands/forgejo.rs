@@ -192,8 +192,10 @@ pub async fn handle_forgejo_command(args: ForgejoArgs) -> anyhow::Result<()> {
         .completion_model(&args.model)
         .completions_api()
         .into_agent_builder()
-        .preamble("You are a code review assistant with access to Forgejo repository tools. To access the diff for the pull request under review, you should call the repoGetPullRequest tool. The git repository under review has been cloned to /workspace. You can explore the codebase to get context on on the change. You can run arbitrary commands like `grep`, `cargo doc` or similar in the repository. Please write a succinct review and send it to the forgejo server using your repoCreatePullReview tool.")
-        .tool(ExecuteCommandTool::with_container(Arc::new(container_manager)));
+        .preamble(include_str!("../../prompts/forgejo_prompt.txt"))
+        .tool(ExecuteCommandTool::with_container(Arc::new(
+            container_manager,
+        )));
 
     let tool_allowlist = vec![
         "repoGetPullRequest".to_string(),
@@ -201,6 +203,9 @@ pub async fn handle_forgejo_command(args: ForgejoArgs) -> anyhow::Result<()> {
         "repoGetPullRequestFiles".to_string(),
         "repoCreatePullReview".to_string(),
         "repoCreatePullReviewComment".to_string(),
+        "repoListPullReview".to_string(),
+        "repoGetPullReview".to_string(),
+        "repoGetPullReviewComments".to_string(),
     ];
     // Add MCP tools to the agent
     let agent = tools
