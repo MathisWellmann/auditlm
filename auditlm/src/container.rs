@@ -57,6 +57,7 @@ impl ContainerManager {
             binds.push(format!("{}:/workspace:z", host_path));
         }
 
+        // Sleep until the TempDir is dropped or timeout (2 hours) is reached
         let config = Config {
             image: Some(image),
             host_config: Some(bollard::models::HostConfig {
@@ -65,7 +66,11 @@ impl ContainerManager {
                 ..Default::default()
             }),
             working_dir: Some("/workspace"),
-            cmd: Some(vec!["sleep", "infinity"]),
+            cmd: Some(vec![
+                "sh",
+                "-c",
+                "timeout 7200 sh -c 'while touch /workspace/.auditlm_keepalive >/dev/null 2>&1; do sleep 10; date; done'",
+            ]),
             tty: Some(true),
             ..Default::default()
         };
