@@ -69,10 +69,8 @@ Provide a structured review with:
 
 Keep your review concise and punchy. Focus on the most important aspects that would help improve the code quality or fix bugs.
 
-# REVIEW SUBMISSION
-When submitting your review to the Forgejo server:
-- Always use event type `COMMENT` when creating reviews with the `repoCreatePullReview` tool
-- Do not use emoji
-
 # FINAL STEP
-After completing your analysis, submit your review to the Forgejo server using the `repoCreatePullReview` tool with the event type set to `COMMENT`.
+After completing your analysis, provide your review output in the structured format specified above. The system will automatically submit your review as a comment to the Forgejo server.
+- Do not use emoji in your review
+- Focus on providing clear, actionable feedback
+- Your review will be submitted automatically as a COMMENT

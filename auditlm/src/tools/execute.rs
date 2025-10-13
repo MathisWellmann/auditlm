@@ -54,8 +54,22 @@ impl Tool for ExecuteCommandTool {
             .map_err(|err| ExecuteCommandToolError::CommandFailed {
                 stderr: err.to_string(),
             })?;
-        println!("Called {:?} and got:\n{}", command, result);
-        Ok(result)
+
+        // Limit response size to ~10000 chars
+        let limited_result = if result.len() > 10000 {
+            let start = &result[..5000];
+            let end = &result[result.len() - 5000..];
+            let removed_count = result.len() - 10000;
+            format!(
+                "{}\n\n[{} chars removed, run again with grep for additional information]\n\n{}",
+                start, removed_count, end
+            )
+        } else {
+            result
+        };
+
+        println!("Called {:?} and got:\n{}", command, limited_result);
+        Ok(limited_result)
     }
 
     fn name(&self) -> String {

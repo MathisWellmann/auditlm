@@ -1,7 +1,9 @@
 use anyhow::Context;
 use clap::Parser;
 use forgejo_api::Forgejo;
-use forgejo_api::structs::{IssueGetCommentsAndTimelineQuery, IssueSearchIssuesQuery};
+use forgejo_api::structs::{
+    CreatePullReviewOptions, IssueGetCommentsAndTimelineQuery, IssueSearchIssuesQuery,
+};
 use http::HeaderMap;
 use http::header::AUTHORIZATION;
 use rig::providers::openai;
@@ -214,7 +216,6 @@ async fn create_agent_with_tools(
     let tool_allowlist = vec![
         "repoGetPullRequest".to_string(),
         "repoGetPullRequestCommits".to_string(),
-        "repoCreatePullReview".to_string(),
     ];
 
     // Add MCP tools to the agent
@@ -463,11 +464,8 @@ pub async fn review_forgejo_pr(
             IssueGetCommentsAndTimelineQuery::default(),
         )
         .await?;
-    let diff = if let Some(diff_url) = forgejo
-        .repo_get_pull_request(owner, repo, pr_index)
-        .await?
-        .diff_url
-    {
+    let pull_meta = forgejo.repo_get_pull_request(owner, repo, pr_index).await?;
+    let diff = if let Some(diff_url) = pull_meta.diff_url {
         String::from_utf8_lossy(&reqwest::get(diff_url).await?.bytes().await?).to_string()
     } else {
         "[failed to fetch diff]".to_string()
@@ -484,6 +482,20 @@ pub async fn review_forgejo_pr(
     let response = request.await?;
 
     println!("Agent response: {}", response);
+
+    forgejo
+        .repo_create_pull_review(
+            owner,
+            repo,
+            pr_index,
+            CreatePullReviewOptions {
+                body: Some(response),
+                comments: Some(vec![]),
+                commit_id: None,
+                event: Some("COMMENT".to_string()),
+            },
+        )
+        .await?;
 
     // Keep the server running until we're done
     println!("Shutting down MCP server");
