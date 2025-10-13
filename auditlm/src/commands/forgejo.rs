@@ -68,10 +68,11 @@ pub struct ForgejoArgs {
 // Helper functions for git operations
 async fn clone_repository(
     forgejo_url: &str,
+    owner: &str,
     repository: &str,
     container_manager: &ContainerManager,
 ) -> anyhow::Result<()> {
-    let repo_url = format!("{}/{}.git", forgejo_url, repository);
+    let repo_url = format!("{}/{}/{}.git", forgejo_url, owner, repository);
     println!("Cloning repository: {}", repo_url);
 
     let clone_command = vec![
@@ -433,7 +434,7 @@ pub async fn review_forgejo_pr(
 
     println!("Cloning repository");
     // Clone repository and get diff
-    clone_repository(&args.forgejo_url, repo, &container_manager).await?;
+    clone_repository(&args.forgejo_url, owner, repo, &container_manager).await?;
 
     // Check transport again before listing tools
     if client.is_transport_closed() {
