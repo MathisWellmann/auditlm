@@ -1,3 +1,4 @@
+use std::os::unix::fs::FileTypeExt;
 use std::sync::Arc;
 
 use crate::commands::forgejo::client::{
@@ -29,7 +30,12 @@ impl ForgejoResourceManager {
                 initialize_container_manager(&self.config.socket, &self.config.image).await?;
             self.container_manager = Some(Arc::new(manager));
         }
-        Ok(self.container_manager.as_ref().unwrap().clone())
+        self.container_manager
+            .as_ref()
+            .ok_or_else(|| {
+                ForgejoError::Configuration("Container manager not initialized".to_string())
+            })
+            .cloned()
     }
 
     /// Clone a repository using the container manager
@@ -79,10 +85,21 @@ pub fn validate_docker_socket(socket: &str) -> Result<(), ForgejoError> {
         ));
     }
 
-    // Check if the socket exists and is a socket file
-    if !std::path::Path::new(socket).exists() {
+    let path = std::path::Path::new(socket);
+    if !path.exists() {
         return Err(ForgejoError::Configuration(format!(
             "Docker socket does not exist: {}",
+            socket
+        )));
+    }
+
+    let metadata = std::fs::metadata(socket).map_err(|e| {
+        ForgejoError::Configuration(format!("Failed to read socket metadata: {}", e))
+    })?;
+
+    if !metadata.file_type().is_socket() {
+        return Err(ForgejoError::Configuration(format!(
+            "Path is not a Unix socket: {}",
             socket
         )));
     }

@@ -75,7 +75,14 @@ pub async fn process_pr_review_with_resources(
 
     // Clean up the server
     server_handle.abort();
-    let _ = server_handle.await;
+    match server_handle.await {
+        Ok(_) => println!("Server handle cleaned up successfully"),
+        Err(e) => {
+            if !e.is_cancelled() {
+                eprintln!("Error while cleaning up server handle: {:?}", e);
+            }
+        }
+    }
 
     Ok(())
 }

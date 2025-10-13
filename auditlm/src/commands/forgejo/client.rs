@@ -12,6 +12,8 @@ use http::HeaderMap;
 use http::header::AUTHORIZATION;
 use rmcp_openapi::Server;
 use std::env;
+use std::time::Instant;
+use tracing::{info, warn};
 use url::Url;
 
 use crate::commands::forgejo::error::ForgejoError;
@@ -69,6 +71,9 @@ impl ForgejoClient {
     pub async fn search_mentioned_issues(
         &self,
     ) -> Result<Vec<forgejo_api::structs::Issue>, ForgejoError> {
+        let start_time = Instant::now();
+        info!("Starting search for mentioned issues");
+
         let issues = self
             .forgejo
             .issue_search_issues(IssueSearchIssuesQuery {
@@ -81,6 +86,12 @@ impl ForgejoClient {
             .await
             .map_err(|e| ForgejoError::Api(e))?;
 
+        let duration = start_time.elapsed();
+        info!(
+            "Search for mentioned issues completed in {:?}, found {} issues",
+            duration,
+            issues.1.len()
+        );
         Ok(issues.1)
     }
 
@@ -90,7 +101,10 @@ impl ForgejoClient {
         owner: &str,
         repo: &str,
         issue_index: u64,
-    ) -> Result<(HeaderMap, Vec<serde_json::Value>), ForgejoError> {
+    ) -> Result<(HeaderMap, Vec<forgejo_api::structs::TimelineComment>), ForgejoError> {
+        let start_time = Instant::now();
+        info!("Getting timeline for {}/{}#{}", owner, repo, issue_index);
+
         let (_headers, issue_comments) = self
             .forgejo
             .issue_get_comments_and_timeline(
@@ -102,17 +116,17 @@ impl ForgejoClient {
             .await
             .map_err(|e| ForgejoError::Api(e))?;
 
-        let timeline_values: Vec<serde_json::Value> = issue_comments
-            .into_iter()
-            .map(|comment| {
-                serde_json::to_value(comment).unwrap_or_else(|_| serde_json::Value::Null)
-            })
-            .collect();
+        let duration = start_time.elapsed();
+        info!(
+            "Timeline retrieval completed in {:?}, found {} comments",
+            duration,
+            issue_comments.len()
+        );
 
         // Create a new HeaderMap (simplified approach)
         let header_map = HeaderMap::new();
 
-        Ok((header_map, timeline_values))
+        Ok((header_map, issue_comments))
     }
 
     /// Get pull request information
@@ -122,6 +136,12 @@ impl ForgejoClient {
         repo: &str,
         pr_index: u64,
     ) -> Result<PrInfo, ForgejoError> {
+        let start_time = Instant::now();
+        info!(
+            "Getting pull request information for {}/{}#{}",
+            owner, repo, pr_index
+        );
+
         let (_headers, timeline) = self.get_issue_timeline(owner, repo, pr_index).await?;
 
         let pull_meta = self
@@ -130,7 +150,9 @@ impl ForgejoClient {
             .await
             .map_err(|e| ForgejoError::Api(e))?;
 
+        let diff_start = Instant::now();
         let diff = if let Some(diff_url) = pull_meta.diff_url {
+            info!("Fetching diff from URL: {}", diff_url);
             reqwest::get(diff_url)
                 .await
                 .map_err(|e| ForgejoError::Repository(format!("Failed to fetch diff URL: {}", e)))?
@@ -139,18 +161,44 @@ impl ForgejoClient {
                 .map_err(|e| ForgejoError::Repository(format!("Failed to read diff bytes: {}", e)))
                 .map(|bytes| String::from_utf8_lossy(&bytes).to_string())?
         } else {
+            warn!(
+                "No diff URL available for PR {}/{}#{}",
+                owner, repo, pr_index
+            );
             "[failed to fetch diff]".to_string()
         };
+
+        let diff_duration = diff_start.elapsed();
+        info!(
+            "Diff fetch completed in {:?}, size: {} bytes",
+            diff_duration,
+            diff.len()
+        );
+
+        // Convert timeline to JSON values only at the final step
+        let timeline_start = Instant::now();
+        let timeline_json: Vec<serde_json::Value> = timeline
+            .iter()
+            .filter_map(|comment| serde_json::to_value(comment).ok())
+            .collect();
+        let timeline_duration = timeline_start.elapsed();
+        info!(
+            "Timeline JSON conversion completed in {:?}",
+            timeline_duration
+        );
+
+        let total_duration = start_time.elapsed();
+        info!(
+            "Pull request information retrieval completed in {:?}",
+            total_duration
+        );
 
         Ok(PrInfo {
             owner: owner.to_string(),
             repo: repo.to_string(),
             index: pr_index,
             diff,
-            timeline: timeline
-                .into_iter()
-                .map(|t| serde_json::to_value(t).unwrap())
-                .collect(),
+            timeline: timeline_json,
         })
     }
 
@@ -162,13 +210,19 @@ impl ForgejoClient {
         pr_index: u64,
         review_body: String,
     ) -> Result<(), ForgejoError> {
+        let start_time = Instant::now();
+        info!(
+            "Creating pull request review for {}/{}#{}",
+            owner, repo, pr_index
+        );
+
         self.forgejo
             .repo_create_pull_review(
                 owner,
                 repo,
                 pr_index,
                 CreatePullReviewOptions {
-                    body: Some(review_body),
+                    body: Some(review_body.clone()),
                     comments: Some(vec![]),
                     commit_id: None,
                     event: Some("COMMENT".to_string()),
@@ -177,6 +231,12 @@ impl ForgejoClient {
             .await
             .map_err(|e| ForgejoError::Api(e))?;
 
+        let duration = start_time.elapsed();
+        info!(
+            "Pull request review created in {:?}, review body length: {} characters",
+            duration,
+            review_body.len()
+        );
         Ok(())
     }
 
@@ -195,18 +255,16 @@ impl ForgejoClient {
         let mut most_recent_own_comment: Option<usize> = None;
 
         for (index, comment) in issue_comments.iter().enumerate() {
-            // Parse the comment as a timeline item to extract user and body
-            if let Some(user) = comment
-                .get("user")
-                .and_then(|u| u.get("login"))
-                .and_then(|l| l.as_str())
-            {
-                if Some(user.to_string()) == self.authenticated_user.login.clone() {
-                    most_recent_own_comment = Some(index);
+            // Work directly with the TimelineComment struct for better type safety
+            if let Some(user) = &comment.user {
+                if let Some(user_login) = &user.login {
+                    if Some(user_login.clone()) == self.authenticated_user.login.clone() {
+                        most_recent_own_comment = Some(index);
+                    }
                 }
             }
 
-            if let Some(body) = comment.get("body").and_then(|b| b.as_str()) {
+            if let Some(body) = &comment.body {
                 if body.contains(&format!(
                     "@{}",
                     self.authenticated_user.login.clone().unwrap_or_default()

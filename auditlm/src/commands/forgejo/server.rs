@@ -9,6 +9,8 @@ use rmcp::{
     service::ServiceExt,
 };
 use std::sync::Arc;
+use std::time::Instant;
+use tracing::info;
 
 use crate::commands::forgejo::common::{client_info, defaults, tools};
 use crate::commands::forgejo::error::ForgejoError;
@@ -31,6 +33,9 @@ use crate::tools::todo::TodoListTool;
 pub async fn setup_mcp_client(
     server_addr: &str,
 ) -> Result<RunningService<rmcp::RoleClient, InitializeRequestParam>, ForgejoError> {
+    let start_time = Instant::now();
+    info!("Setting up MCP client connection to: {}", server_addr);
+
     // Connect to the MCP server as a client using TCP
     println!("Connecting to MCP server at: {}", server_addr);
     let stream = tokio::net::TcpStream::connect(server_addr)
@@ -72,6 +77,9 @@ pub async fn setup_mcp_client(
         .ok_or_else(|| ForgejoError::McpConnection("No server info available".to_string()))?;
     println!("Connected to server: {:?}", server_info);
 
+    let duration = start_time.elapsed();
+    info!("MCP client setup completed in {:?}", duration);
+
     Ok(client)
 }
 
@@ -96,6 +104,13 @@ pub async fn create_agent_with_tools(
     tools: Vec<rmcp::model::Tool>,
     client: Peer<rmcp::RoleClient>,
 ) -> Result<rig::agent::Agent<rig::providers::openai::completion::CompletionModel>, ForgejoError> {
+    let start_time = Instant::now();
+    info!(
+        "Creating agent with {} tools for model: {}",
+        tools.len(),
+        args.model
+    );
+
     // Create OpenAI client
     let openai_client = openai::Client::builder(&args.api_key.clone().unwrap_or(String::new()))
         .base_url(&args.base_url)
@@ -129,6 +144,9 @@ pub async fn create_agent_with_tools(
             agent.rmcp_tool(tool, client.clone())
         })
         .build();
+
+    let duration = start_time.elapsed();
+    info!("Agent creation completed in {:?}", duration);
 
     Ok(agent)
 }
@@ -184,6 +202,12 @@ pub async fn process_pr_review(
     container_manager: Arc<ContainerManager>,
     client: RunningService<rmcp::RoleClient, InitializeRequestParam>,
 ) -> Result<String, ForgejoError> {
+    let start_time = Instant::now();
+    info!(
+        "Starting PR review processing for {}/{}#{}",
+        pr_info.owner, pr_info.repo, pr_info.index
+    );
+
     // Check transport before listing tools
     if client.is_transport_closed() {
         return Err(ForgejoError::Transport(
@@ -192,28 +216,51 @@ pub async fn process_pr_review(
     }
 
     // List available tools
+    let tools_start = Instant::now();
     println!("Getting available tools");
     let tools_result = client
         .list_tools(Default::default())
         .await
         .map_err(|e| ForgejoError::McpConnection(format!("Failed to list tools: {}", e)))?;
     let tools = tools_result.tools;
+    let tools_duration = tools_start.elapsed();
+    info!(
+        "Tool listing completed in {:?}, found {} tools",
+        tools_duration,
+        tools.len()
+    );
     println!("Available tools: {:?}", tools);
 
     // Create agent with tools
     let agent = create_agent_with_tools(args, container_manager, tools, client.clone()).await?;
 
     // Create prompt with PR timeline.
+    let prompt_start = Instant::now();
     let prompt = format!(
         "The repository owner is `{}` and the repository name is `{}` and the index of the pull request under review is {}. The repository has been checked out to its default branch. Use the `repoGetPullRequest` tool to determine which branch to check out for review. The full timeline of the PR review follows: {:?}\n\nThe diff of the PR follows: {}",
         pr_info.owner, pr_info.repo, pr_info.index, pr_info.timeline, pr_info.diff
     );
+    info!(
+        "Prompt created in {:?}, length: {} characters",
+        prompt_start.elapsed(),
+        prompt.len()
+    );
 
     // Send prompt to agent
+    let agent_start = Instant::now();
     let request = PromptRequest::new(&agent, &prompt).multi_turn(999);
     let response = request
         .await
         .map_err(|e| ForgejoError::Agent(format!("Agent request failed: {}", e)))?;
+    let agent_duration = agent_start.elapsed();
+    info!(
+        "Agent processing completed in {:?}, response length: {} characters",
+        agent_duration,
+        response.len()
+    );
+
+    let total_duration = start_time.elapsed();
+    info!("PR review processing completed in {:?}", total_duration);
 
     println!("Agent response: {}", response);
     Ok(response)
