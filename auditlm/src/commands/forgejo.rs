@@ -285,8 +285,7 @@ async fn process_mentioned_issues(
         }
 
         if issue.pull_request.is_some() {
-            if let Err(e) =
-                review_forgejo_pr(&args, &format!("{owner}/{repository}"), id as u64).await
+            if let Err(e) = review_forgejo_pr(&args, forgejo, &owner, &repository, id as u64).await
             {
                 tracing::error!("Error while reviewing PR {e}");
             }
@@ -412,7 +411,9 @@ pub async fn forgejo_dameon(args: ForgejoArgs) -> anyhow::Result<()> {
 
 pub async fn review_forgejo_pr(
     args: &ForgejoArgs,
-    repository: &str,
+    forgejo: &Forgejo,
+    owner: &str,
+    repo: &str,
     pr_index: u64,
 ) -> anyhow::Result<()> {
     // Initialize container manager
@@ -432,7 +433,7 @@ pub async fn review_forgejo_pr(
 
     println!("Cloning repository");
     // Clone repository and get diff
-    clone_repository(&args.forgejo_url, repository, &container_manager).await?;
+    clone_repository(&args.forgejo_url, repo, &container_manager).await?;
 
     // Check transport again before listing tools
     if client.is_transport_closed() {
@@ -452,10 +453,19 @@ pub async fn review_forgejo_pr(
     let agent =
         create_agent_with_tools(&args, Arc::new(container_manager), tools, client.clone()).await?;
 
-    // Create prompt with diff
+    let (_headers, timeline) = forgejo
+        .issue_get_comments_and_timeline(
+            owner,
+            repo,
+            pr_index,
+            IssueGetCommentsAndTimelineQuery::default(),
+        )
+        .await?;
+
+    // Create prompt with PR timeline.
     let prompt = format!(
-        "The repository owner and name is `{}` and the index of the pull request under review is {}. The repository has been checked out to its default branch. Use the `repoGetPullRequest` tool to determine which branch to check out for review.",
-        repository, pr_index
+        "The repository owner is `{}` and the repository name is `{}` and the index of the pull request under review is {}. The repository has been checked out to its default branch. Use the `repoGetPullRequest` tool to determine which branch to check out for review. The full timeline of the PR review follows: {:?}",
+        owner, repo, pr_index, timeline
     );
 
     // Send prompt to agent
