@@ -208,12 +208,8 @@ async fn create_agent_with_tools(
     let tool_allowlist = vec![
         "repoGetPullRequest".to_string(),
         "repoGetPullRequestCommits".to_string(),
-        "repoGetPullRequestFiles".to_string(),
         "repoCreatePullReview".to_string(),
         "repoCreatePullReviewComment".to_string(),
-        "repoListPullReview".to_string(),
-        "repoGetPullReview".to_string(),
-        "repoGetPullReviewComments".to_string(),
     ];
 
     // Add MCP tools to the agent
