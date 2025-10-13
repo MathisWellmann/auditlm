@@ -462,11 +462,20 @@ pub async fn review_forgejo_pr(
             IssueGetCommentsAndTimelineQuery::default(),
         )
         .await?;
+    let diff = if let Some(diff_url) = forgejo
+        .repo_get_pull_request(owner, repo, pr_index)
+        .await?
+        .diff_url
+    {
+        String::from_utf8_lossy(&reqwest::get(diff_url).await?.bytes().await?).to_string()
+    } else {
+        "[failed to fetch diff]".to_string()
+    };
 
     // Create prompt with PR timeline.
     let prompt = format!(
-        "The repository owner is `{}` and the repository name is `{}` and the index of the pull request under review is {}. The repository has been checked out to its default branch. Use the `repoGetPullRequest` tool to determine which branch to check out for review. The full timeline of the PR review follows: {:?}",
-        owner, repo, pr_index, timeline
+        "The repository owner is `{}` and the repository name is `{}` and the index of the pull request under review is {}. The repository has been checked out to its default branch. Use the `repoGetPullRequest` tool to determine which branch to check out for review. The full timeline of the PR review follows: {:?}\n\nThe diff of the PR follows: {}",
+        owner, repo, pr_index, timeline, diff
     );
 
     // Send prompt to agent
