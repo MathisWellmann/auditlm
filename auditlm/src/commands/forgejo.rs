@@ -381,7 +381,7 @@ async fn should_comment_on_issue(
     }
 }
 
-pub async fn forgejo_dameon(args: ForgejoArgs) -> anyhow::Result<()> {
+pub async fn forgejo_daemon(args: ForgejoArgs) -> anyhow::Result<()> {
     let forgejo_token =
         env::var("FORGEJO_TOKEN").expect("FORGEJO_TOKEN environment variable not set");
 
