@@ -59,6 +59,10 @@ pub struct ForgejoArgs {
     /// Docker image to use for analysis (e.g., "rust:1-trixie", "ubuntu:22.04")
     #[arg(long)]
     image: String,
+
+    /// How often to check for new @ mentions.
+    #[arg(long, default_value = "30")]
+    interval: u64,
 }
 
 // Helper functions for git operations
@@ -402,7 +406,7 @@ pub async fn forgejo_dameon(args: ForgejoArgs) -> anyhow::Result<()> {
             }
         }
 
-        tokio::time::sleep(Duration::from_secs(30)).await
+        tokio::time::sleep(Duration::from_secs(args.interval)).await
     }
 }
 
