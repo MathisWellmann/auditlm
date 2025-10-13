@@ -23,6 +23,7 @@ use url::Url;
 
 use crate::container::ContainerManager;
 use crate::tools::execute::ExecuteCommandTool;
+use crate::tools::todo::TodoListTool;
 
 /// Errors encountered in the task processing loop.
 #[derive(Error, Debug)]
@@ -203,7 +204,12 @@ async fn create_agent_with_tools(
         .completions_api()
         .into_agent_builder()
         .preamble(include_str!("../../prompts/forgejo_prompt.txt"))
-        .tool(ExecuteCommandTool::with_container(container_manager));
+        .max_tokens(1024)
+        .temperature(0.6)
+        .tool(ExecuteCommandTool::with_container(
+            container_manager.clone(),
+        ))
+        .tool(TodoListTool::new());
 
     let tool_allowlist = vec![
         "repoGetPullRequest".to_string(),
