@@ -1,8 +1,7 @@
-use std::env;
-use std::sync::Arc;
-
 use anyhow::Context;
 use clap::Parser;
+use forgejo_api::Forgejo;
+use forgejo_api::structs::{IssueGetCommentsQuery, IssueSearchIssuesQuery};
 use http::HeaderMap;
 use http::header::AUTHORIZATION;
 use rig::providers::openai;
@@ -15,13 +14,26 @@ use rmcp::{
     service::ServiceExt,
 };
 use rmcp_openapi::Server;
+use std::env;
+use std::sync::Arc;
+use std::time::Duration;
+use thiserror::Error;
+use time::OffsetDateTime;
 use url::Url;
 
 use crate::container::ContainerManager;
 use crate::tools::execute::ExecuteCommandTool;
 
+#[derive(Error, Debug)]
+pub enum ForgejoError {
+    #[error("Forgejo API error: {0}")]
+    ForgejoApi(#[from] forgejo_api::ForgejoError),
+    #[error("Non-fatal error: {0}")]
+    NonFatal(#[from] anyhow::Error),
+}
+
 /// Command-line arguments for the forgejo subcommand
-#[derive(Debug, Parser)]
+#[derive(Debug, Parser, Clone)]
 pub struct ForgejoArgs {
     /// The OpenAI model to use for code review (e.g., "gpt-4", "gpt-3.5-turbo")
     #[arg(long)]
@@ -46,12 +58,6 @@ pub struct ForgejoArgs {
     /// Docker image to use for analysis (e.g., "rust:1-trixie", "ubuntu:22.04")
     #[arg(long)]
     image: String,
-
-    /// Repository name in the format "owner/repo"
-    repository: String,
-
-    /// The index of the pull request under review.
-    pull_request_index: u64,
 }
 
 // Helper functions for git operations
@@ -217,7 +223,194 @@ async fn create_agent_with_tools(
     Ok(agent)
 }
 
-pub async fn handle_forgejo_command(args: ForgejoArgs) -> anyhow::Result<()> {
+// Process mentioned issues and queue appropriate tasks
+async fn process_mentioned_issues(
+    args: &ForgejoArgs,
+    forgejo: &Forgejo,
+    authenticated_user: &str,
+) -> Result<(), ForgejoError> {
+    let issues = forgejo
+        .issue_search_issues(IssueSearchIssuesQuery {
+            since: Some(OffsetDateTime::now_utc().saturating_sub(time::Duration::hours(24))),
+            mentioned: Some(true),
+            ..Default::default()
+        })
+        .await?;
+
+    for issue in &issues.1 {
+        let id = match issue.id {
+            Some(id) => id,
+            None => {
+                tracing::error!("Found issue without ID: {:?}", issue);
+                continue;
+            }
+        };
+
+        let repo_meta = match &issue.repository {
+            Some(repo) => repo,
+            None => {
+                // Not much we can do without a respository.
+                tracing::error!("Found issue without repository: {:?}", issue);
+                continue;
+            }
+        };
+
+        // Extract owner and repository name from repo_meta
+        let owner = match &repo_meta.owner {
+            Some(owner) => owner.clone(),
+            None => {
+                tracing::error!("Found repository without owner: {:?}", repo_meta);
+                continue;
+            }
+        };
+
+        let repository = match &repo_meta.name {
+            Some(name) => name.clone(),
+            None => {
+                tracing::error!("Found repository without name: {:?}", repo_meta);
+                continue;
+            }
+        };
+
+        // Check to see if we've weighed in since the mention (avoid double-comments)
+        if !should_comment_on_issue(forgejo, &owner, &repository, id as u64, authenticated_user)
+            .await?
+        {
+            continue;
+        }
+
+        if issue.pull_request.is_some() {
+            if let Err(e) =
+                review_forgejo_pr(&args, &format!("{owner}/{repository}"), id as u64).await
+            {
+                tracing::error!("Error while reviewing PR {e}");
+            }
+        } else {
+            tracing::info!(
+                "Got a task to look into issue {owner}/{repository}#{id} (unimplemented)"
+            )
+        }
+    }
+
+    Ok(())
+}
+
+// Check if we should comment on an issue based on recent comments
+async fn should_comment_on_issue(
+    forgejo: &Forgejo,
+    owner: &str,
+    repository: &str,
+    issue_index: u64,
+    authenticated_user: &str,
+) -> anyhow::Result<bool> {
+    let (_headers, issue_comments) = forgejo
+        .issue_get_comments(
+            owner,
+            repository,
+            issue_index,
+            IssueGetCommentsQuery::default(),
+        )
+        .await?;
+
+    let mut most_recent_mention: Option<usize> = None;
+    let mut most_recent_own_comment: Option<usize> = None;
+
+    for (index, comment) in issue_comments.iter().enumerate() {
+        if comment.original_author == Some(authenticated_user.to_string()) {
+            most_recent_own_comment = Some(index);
+        }
+        if comment
+            .body
+            .as_ref()
+            .map(|body| body.contains(&format!("@{}", authenticated_user)))
+            == Some(true)
+        {
+            most_recent_mention = Some(index);
+        }
+    }
+
+    let (most_recent_mention, most_recent_own_comment) = match (
+        most_recent_mention,
+        most_recent_own_comment,
+    ) {
+        (None, _) => {
+            tracing::info!(
+                "It appears we were never mentioned in {}/{}#{} This indicates a logic error or deleted comment.",
+                owner,
+                repository,
+                issue_index
+            );
+            return Ok(false);
+        }
+        (Some(_), None) => {
+            tracing::info!(
+                "We were mentioned in {}/{}#{} and have never commented in it.",
+                owner,
+                repository,
+                issue_index
+            );
+            return Ok(true);
+        }
+        (Some(mention), Some(comment)) => (mention, comment),
+    };
+
+    if most_recent_mention > most_recent_own_comment {
+        tracing::info!(
+            "We were mentioned more recently in {}/{}#{} than our last comment.",
+            owner,
+            repository,
+            issue_index
+        );
+        Ok(true)
+    } else {
+        tracing::info!(
+            "We've commented in {}/{}#{} since our last mention.",
+            owner,
+            repository,
+            issue_index
+        );
+        Ok(false)
+    }
+}
+
+pub async fn forgejo_dameon(args: ForgejoArgs) -> anyhow::Result<()> {
+    let forgejo_token =
+        env::var("FORGEJO_TOKEN").expect("FORGEJO_TOKEN environment variable not set");
+
+    let forgejo = Forgejo::new(
+        forgejo_api::Auth::Token(&forgejo_token),
+        Url::parse(&args.forgejo_url)?,
+    )?;
+
+    let authenticated_user = if let Some(user) = forgejo.user_get_current().await?.login {
+        user
+    } else {
+        anyhow::bail!("No authenticated user ID.");
+    };
+
+    // Loop forever finding and queueing assigned tasks.
+    loop {
+        match process_mentioned_issues(&args, &forgejo, &authenticated_user).await {
+            Ok(()) => {
+                // Successfully processed issues
+            }
+            Err(ForgejoError::NonFatal(e)) => {
+                tracing::error!("Non-fatal error processing mentioned issues: {}", e);
+            }
+            Err(ForgejoError::ForgejoApi(e)) => {
+                tracing::error!("Forgejo API error processing mentioned issues: {}", e);
+            }
+        }
+
+        tokio::time::sleep(Duration::from_secs(30)).await
+    }
+}
+
+pub async fn review_forgejo_pr(
+    args: &ForgejoArgs,
+    repository: &str,
+    pr_index: u64,
+) -> anyhow::Result<()> {
     // Initialize container manager
     let container_manager = initialize_container_manager(&args.socket, &args.image).await?;
 
@@ -235,7 +428,7 @@ pub async fn handle_forgejo_command(args: ForgejoArgs) -> anyhow::Result<()> {
 
     println!("Cloning repository");
     // Clone repository and get diff
-    clone_repository(&args.forgejo_url, &args.repository, &container_manager).await?;
+    clone_repository(&args.forgejo_url, repository, &container_manager).await?;
 
     // Check transport again before listing tools
     if client.is_transport_closed() {
@@ -257,8 +450,8 @@ pub async fn handle_forgejo_command(args: ForgejoArgs) -> anyhow::Result<()> {
 
     // Create prompt with diff
     let prompt = format!(
-        "The repository owner and name is `{}` and the index of the pull request under review is {}",
-        args.repository, args.pull_request_index
+        "The repository owner and name is `{}` and the index of the pull request under review is {}. The repository has been checked out to its default branch. Use the `repoGetPullRequest` tool to determine which branch to check out for review.",
+        repository, pr_index
     );
 
     // Send prompt to agent

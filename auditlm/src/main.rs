@@ -4,7 +4,7 @@ mod tools;
 
 use clap::Parser;
 
-use commands::{forgejo::handle_forgejo_command, git::handle_git_command};
+use commands::{forgejo::forgejo_dameon, git::handle_git_command};
 
 /// Command-line arguments for the auditlm tool
 #[derive(Debug, Parser)]
@@ -31,7 +31,7 @@ async fn main() -> anyhow::Result<()> {
             handle_git_command(args).await?;
         }
         Commands::Forgejo(args) => {
-            handle_forgejo_command(args).await?;
+            forgejo_dameon(args).await?;
         }
     }
 
