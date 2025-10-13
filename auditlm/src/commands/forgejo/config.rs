@@ -111,8 +111,6 @@ mod tests {
     #[test]
     fn test_validate_docker_socket_regular_file() {
         // Create a temporary file for testing
-        use std::fs::File;
-        use std::io::Write;
         use tempfile::NamedTempFile;
 
         let temp_file = NamedTempFile::new().unwrap();
