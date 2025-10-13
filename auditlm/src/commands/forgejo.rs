@@ -7,6 +7,9 @@ use http::HeaderMap;
 use http::header::AUTHORIZATION;
 use rig::providers::openai;
 use rig::{agent::PromptRequest, client::CompletionClient};
+use rmcp::Peer;
+use rmcp::model::InitializeRequestParam;
+use rmcp::service::RunningService;
 use rmcp::{
     model::{ClientCapabilities, ClientInfo},
     service::ServiceExt,
@@ -76,18 +79,23 @@ async fn clone_repository(
     Ok(())
 }
 
-pub async fn handle_forgejo_command(args: ForgejoArgs) -> anyhow::Result<()> {
-    // Initialize container manager
-    let mut container_manager = ContainerManager::new(&args.socket).await?;
-    container_manager
-        .create_analysis_container(&args.image)
-        .await?;
+// Initialize container manager and create analysis container
+async fn initialize_container_manager(
+    socket: &str,
+    image: &str,
+) -> anyhow::Result<ContainerManager> {
+    let mut container_manager = ContainerManager::new(socket).await?;
+    container_manager.create_analysis_container(image).await?;
+    Ok(container_manager)
+}
 
+// Set up OpenAPI server with Forgejo spec
+async fn setup_openapi_server(forgejo_url: &str) -> anyhow::Result<rmcp_openapi::Server> {
     // Download Forgejo OpenAPI spec
     let openapi_spec = serde_json::from_str(include_str!("../../api/forgejo.v1.json"))?;
 
     // Create OpenAPI server with Forgejo spec
-    let forgejo_base_url = Url::parse(&args.forgejo_url).context("Failed to parse Forgejo URL")?;
+    let forgejo_base_url = Url::parse(forgejo_url).context("Failed to parse Forgejo URL")?;
 
     let forgejo_token =
         env::var("FORGEJO_TOKEN").expect("FORGEJO_TOKEN environment variable not set");
@@ -101,14 +109,13 @@ pub async fn handle_forgejo_command(args: ForgejoArgs) -> anyhow::Result<()> {
             .context("Failed to parse authorization header")?,
     );
 
-    let openapi_server = Server::builder()
+    let mut openapi_server = Server::builder()
         .openapi_spec(openapi_spec)
         .base_url(forgejo_base_url)
         .default_headers(headers)
         .build();
 
     // Load tools from the OpenAPI spec
-    let mut openapi_server = openapi_server;
     openapi_server
         .load_openapi_spec()
         .context("Failed to load OpenAPI tools")?;
@@ -119,17 +126,16 @@ pub async fn handle_forgejo_command(args: ForgejoArgs) -> anyhow::Result<()> {
     let openapi_tool_names = openapi_server.get_tool_names();
     println!("OpenAPI tool names: {:?}", openapi_tool_names);
 
-    // No need to create a Forgejo server since we're using the OpenAPI server
+    Ok(openapi_server)
+}
 
-    // Start a local MCP server with the OpenAPI server
-    let (server_handle, server_addr) = start_local_mcp_server_with_openapi(openapi_server).await?;
-
-    // Give the server a moment to start up
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-
+// Set up MCP client connection
+async fn setup_mcp_client(
+    server_addr: &str,
+) -> anyhow::Result<RunningService<rmcp::RoleClient, InitializeRequestParam>> {
     // Connect to the MCP server as a client using TCP
     println!("Connecting to MCP server at: {}", server_addr);
-    let stream = tokio::net::TcpStream::connect(&server_addr)
+    let stream = tokio::net::TcpStream::connect(server_addr)
         .await
         .context("Failed to connect to MCP server")?;
     let transport = stream;
@@ -164,6 +170,69 @@ pub async fn handle_forgejo_command(args: ForgejoArgs) -> anyhow::Result<()> {
         .ok_or_else(|| anyhow::anyhow!("No server info available"))?;
     println!("Connected to server: {:?}", server_info);
 
+    Ok(client)
+}
+
+// Create and configure the OpenAI agent with MCP tools
+async fn create_agent_with_tools(
+    args: &ForgejoArgs,
+    container_manager: Arc<ContainerManager>,
+    tools: Vec<rmcp::model::Tool>,
+    client: Peer<rmcp::RoleClient>,
+) -> anyhow::Result<rig::agent::Agent<rig::providers::openai::completion::CompletionModel>> {
+    // Create OpenAI client
+    let openai_client = openai::Client::builder(&args.api_key.clone().unwrap_or(String::new()))
+        .base_url(&args.base_url)
+        .build()?;
+
+    // Create agent with MCP tools
+    let agent = openai_client
+        .completion_model(&args.model)
+        .completions_api()
+        .into_agent_builder()
+        .preamble(include_str!("../../prompts/forgejo_prompt.txt"))
+        .tool(ExecuteCommandTool::with_container(container_manager));
+
+    let tool_allowlist = vec![
+        "repoGetPullRequest".to_string(),
+        "repoGetPullRequestCommits".to_string(),
+        "repoGetPullRequestFiles".to_string(),
+        "repoCreatePullReview".to_string(),
+        "repoCreatePullReviewComment".to_string(),
+        "repoListPullReview".to_string(),
+        "repoGetPullReview".to_string(),
+        "repoGetPullReviewComments".to_string(),
+    ];
+
+    // Add MCP tools to the agent
+    let agent = tools
+        .into_iter()
+        .filter(|tool| tool_allowlist.contains(&tool.name.to_string()))
+        .fold(agent, |agent, tool| {
+            println!("Providing {:?} to agent.", tool);
+            agent.rmcp_tool(tool, client.clone())
+        })
+        .build();
+
+    Ok(agent)
+}
+
+pub async fn handle_forgejo_command(args: ForgejoArgs) -> anyhow::Result<()> {
+    // Initialize container manager
+    let container_manager = initialize_container_manager(&args.socket, &args.image).await?;
+
+    // Set up OpenAPI server with Forgejo spec
+    let openapi_server = setup_openapi_server(&args.forgejo_url).await?;
+
+    // Start a local MCP server with the OpenAPI server
+    let (server_handle, server_addr) = start_local_mcp_server_with_openapi(openapi_server).await?;
+
+    // Give the server a moment to start up
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+    // Set up MCP client connection
+    let client = setup_mcp_client(&server_addr).await?;
+
     println!("Cloning repository");
     // Clone repository and get diff
     clone_repository(&args.forgejo_url, &args.repository, &container_manager).await?;
@@ -182,40 +251,9 @@ pub async fn handle_forgejo_command(args: ForgejoArgs) -> anyhow::Result<()> {
     let tools = tools_result.tools;
     println!("Available tools: {:?}", tools);
 
-    // Create OpenAI client
-    let openai_client = openai::Client::builder(&args.api_key.unwrap_or(String::new()))
-        .base_url(&args.base_url)
-        .build()?;
-
-    // Create agent with MCP tools
-    let agent = openai_client
-        .completion_model(&args.model)
-        .completions_api()
-        .into_agent_builder()
-        .preamble(include_str!("../../prompts/forgejo_prompt.txt"))
-        .tool(ExecuteCommandTool::with_container(Arc::new(
-            container_manager,
-        )));
-
-    let tool_allowlist = vec![
-        "repoGetPullRequest".to_string(),
-        "repoGetPullRequestCommits".to_string(),
-        "repoGetPullRequestFiles".to_string(),
-        "repoCreatePullReview".to_string(),
-        "repoCreatePullReviewComment".to_string(),
-        "repoListPullReview".to_string(),
-        "repoGetPullReview".to_string(),
-        "repoGetPullReviewComments".to_string(),
-    ];
-    // Add MCP tools to the agent
-    let agent = tools
-        .into_iter()
-        .filter(|tool| tool_allowlist.contains(&tool.name.to_string()))
-        .fold(agent, |agent, tool| {
-            println!("Providing {:?} to agent.", tool);
-            agent.rmcp_tool(tool, client.clone())
-        })
-        .build();
+    // Create agent with tools
+    let agent =
+        create_agent_with_tools(&args, Arc::new(container_manager), tools, client.clone()).await?;
 
     // Create prompt with diff
     let prompt = format!(
@@ -248,38 +286,23 @@ async fn start_local_mcp_server_with_openapi(
     println!("OpenAPI MCP server listening on: {}", server_addr);
 
     let handle = tokio::spawn(async move {
-        loop {
-            match listener.accept().await {
-                Ok((stream, addr)) => {
-                    println!("Client connected to OpenAPI MCP server from: {}", addr);
-                    let server_clone = server.clone();
-
-                    // Set TCP keepalive to prevent connection drops
-                    if let Ok(socket) = stream.peer_addr() {
-                        println!("Client socket address: {}", socket);
-                    }
-
-                    // Use the serve_with_ct method from ServiceExt trait
-                    let ct = tokio_util::sync::CancellationToken::new();
-                    match server_clone.serve_with_ct(stream, ct.clone()).await {
-                        Ok(running_service) => {
-                            println!("OpenAPI MCP server successfully started");
-                            // Keep the service running
-                            if let Err(e) = running_service.waiting().await {
-                                println!("OpenAPI MCP server finished with error: {}", e);
-                            } else {
-                                println!("OpenAPI MCP server finished normally");
-                            }
-                        }
-                        Err(e) => {
-                            eprintln!("OpenAPI MCP server error: {}", e);
-                        }
-                    }
-                    println!("OpenAPI MCP server connection closed");
+        match listener.accept().await {
+            Ok((stream, addr)) => {
+                println!("Client connected to OpenAPI MCP server from: {}", addr);
+                if let Ok(socket) = stream.peer_addr() {
+                    println!("Client socket address: {}", socket);
                 }
-                Err(e) => {
-                    eprintln!("Failed to accept connection: {}", e);
+
+                if let Ok(service) = server.serve(stream).await {
+                    match service.waiting().await {
+                        Ok(reason) => println!("Shut down MCP server with reason: {:?}", reason),
+                        Err(e) => eprintln!("Join error: {:?}", e),
+                    }
                 }
+                println!("OpenAPI MCP server connection closed");
+            }
+            Err(e) => {
+                eprintln!("Failed to accept connection: {}", e);
             }
         }
     });
