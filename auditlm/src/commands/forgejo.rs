@@ -1,7 +1,7 @@
 use anyhow::Context;
 use clap::Parser;
 use forgejo_api::Forgejo;
-use forgejo_api::structs::{IssueGetCommentsQuery, IssueSearchIssuesQuery};
+use forgejo_api::structs::{IssueGetCommentsAndTimelineQuery, IssueSearchIssuesQuery};
 use http::HeaderMap;
 use http::header::AUTHORIZATION;
 use rig::providers::openai;
@@ -24,8 +24,9 @@ use url::Url;
 use crate::container::ContainerManager;
 use crate::tools::execute::ExecuteCommandTool;
 
+/// Errors encountered in the task processing loop.
 #[derive(Error, Debug)]
-pub enum ForgejoError {
+pub enum ForgejoTaskError {
     #[error("Forgejo API error: {0}")]
     ForgejoApi(#[from] forgejo_api::ForgejoError),
     #[error("Non-fatal error: {0}")]
@@ -227,8 +228,8 @@ async fn create_agent_with_tools(
 async fn process_mentioned_issues(
     args: &ForgejoArgs,
     forgejo: &Forgejo,
-    authenticated_user: &str,
-) -> Result<(), ForgejoError> {
+    authenticated_user: &forgejo_api::structs::User,
+) -> Result<(), ForgejoTaskError> {
     let issues = forgejo
         .issue_search_issues(IssueSearchIssuesQuery {
             since: Some(OffsetDateTime::now_utc().saturating_sub(time::Duration::hours(24))),
@@ -301,14 +302,14 @@ async fn should_comment_on_issue(
     owner: &str,
     repository: &str,
     issue_index: u64,
-    authenticated_user: &str,
+    authenticated_user: &forgejo_api::structs::User,
 ) -> anyhow::Result<bool> {
     let (_headers, issue_comments) = forgejo
-        .issue_get_comments(
+        .issue_get_comments_and_timeline(
             owner,
             repository,
             issue_index,
-            IssueGetCommentsQuery::default(),
+            IssueGetCommentsAndTimelineQuery::default(),
         )
         .await?;
 
@@ -316,14 +317,17 @@ async fn should_comment_on_issue(
     let mut most_recent_own_comment: Option<usize> = None;
 
     for (index, comment) in issue_comments.iter().enumerate() {
-        if comment.original_author == Some(authenticated_user.to_string()) {
+        if comment.user.as_ref().map(|u| u.login.clone()).flatten()
+            == authenticated_user.login.clone()
+        {
             most_recent_own_comment = Some(index);
         }
-        if comment
-            .body
-            .as_ref()
-            .map(|body| body.contains(&format!("@{}", authenticated_user)))
-            == Some(true)
+        if comment.body.as_ref().map(|body| {
+            body.contains(&format!(
+                "@{}",
+                authenticated_user.login.clone().unwrap_or_default()
+            ))
+        }) == Some(true)
         {
             most_recent_mention = Some(index);
         }
@@ -382,11 +386,7 @@ pub async fn forgejo_dameon(args: ForgejoArgs) -> anyhow::Result<()> {
         Url::parse(&args.forgejo_url)?,
     )?;
 
-    let authenticated_user = if let Some(user) = forgejo.user_get_current().await?.login {
-        user
-    } else {
-        anyhow::bail!("No authenticated user ID.");
-    };
+    let authenticated_user = forgejo.user_get_current().await?;
 
     // Loop forever finding and queueing assigned tasks.
     loop {
@@ -394,10 +394,10 @@ pub async fn forgejo_dameon(args: ForgejoArgs) -> anyhow::Result<()> {
             Ok(()) => {
                 // Successfully processed issues
             }
-            Err(ForgejoError::NonFatal(e)) => {
+            Err(ForgejoTaskError::NonFatal(e)) => {
                 tracing::error!("Non-fatal error processing mentioned issues: {}", e);
             }
-            Err(ForgejoError::ForgejoApi(e)) => {
+            Err(ForgejoTaskError::ForgejoApi(e)) => {
                 tracing::error!("Forgejo API error processing mentioned issues: {}", e);
             }
         }
