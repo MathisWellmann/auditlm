@@ -209,7 +209,6 @@ async fn create_agent_with_tools(
         "repoGetPullRequest".to_string(),
         "repoGetPullRequestCommits".to_string(),
         "repoCreatePullReview".to_string(),
-        "repoCreatePullReviewComment".to_string(),
     ];
 
     // Add MCP tools to the agent
