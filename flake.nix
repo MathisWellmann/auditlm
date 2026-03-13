@@ -35,6 +35,7 @@
         ];
         rust_tools = with pkgs; [
           cargo-nextest
+          cargo-outdated
           taplo # Format `.toml` files.
         ];
         nix_tools = with pkgs; [
