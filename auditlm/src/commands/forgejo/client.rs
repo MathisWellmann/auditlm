@@ -27,6 +27,7 @@ use crate::container::ContainerManager;
 pub struct ForgejoClient {
     forgejo: Forgejo,
     authenticated_user: forgejo_api::structs::User,
+    forgejo_url: String,
 }
 
 impl ForgejoClient {
@@ -57,6 +58,7 @@ impl ForgejoClient {
         Ok(Self {
             forgejo,
             authenticated_user,
+            forgejo_url: forgejo_url.to_string(),
         })
     }
 
@@ -144,29 +146,23 @@ impl ForgejoClient {
 
         let (_headers, timeline) = self.get_issue_timeline(owner, repo, pr_index).await?;
 
-        let pull_meta = self
-            .forgejo
-            .repo_get_pull_request(owner, repo, pr_index)
-            .await
-            .map_err(|e| ForgejoError::Api(e))?;
-
         let diff_start = Instant::now();
-        let diff = if let Some(diff_url) = pull_meta.diff_url {
-            info!("Fetching diff from URL: {}", diff_url);
-            reqwest::get(diff_url)
-                .await
-                .map_err(|e| ForgejoError::Repository(format!("Failed to fetch diff URL: {}", e)))?
-                .bytes()
-                .await
-                .map_err(|e| ForgejoError::Repository(format!("Failed to read diff bytes: {}", e)))
-                .map(|bytes| String::from_utf8_lossy(&bytes).to_string())?
-        } else {
-            warn!(
-                "No diff URL available for PR {}/{}#{}",
-                owner, repo, pr_index
-            );
-            "[failed to fetch diff]".to_string()
-        };
+        // Construct diff URL manually to avoid issues with Forgejo returning incorrect URLs
+        let diff_url = format!(
+            "{}/{}/{}/pulls/{}.diff",
+            self.forgejo_url.trim_end_matches('/'),
+            owner,
+            repo,
+            pr_index
+        );
+        info!("Fetching diff from URL: {}", diff_url);
+        let diff = reqwest::get(diff_url)
+            .await
+            .map_err(|e| ForgejoError::Repository(format!("Failed to fetch diff URL: {}", e)))?
+            .bytes()
+            .await
+            .map_err(|e| ForgejoError::Repository(format!("Failed to read diff bytes: {}", e)))
+            .map(|bytes| String::from_utf8_lossy(&bytes).to_string())?;
 
         let diff_duration = diff_start.elapsed();
         info!(
