@@ -329,6 +329,14 @@ pub async fn clone_repository(
     let repo_url = format!("{}/{}/{}.git", forgejo_url, owner, repository);
     println!("Cloning repository: {}", repo_url);
 
+    // First, clean the workspace to ensure it's empty
+    let clean_command = vec![
+        "sh".to_string(),
+        "-c".to_string(),
+        "rm -rf * .[!.]* 2>/dev/null || true".to_string(),
+    ];
+    let _ = container_manager.execute_command(&clean_command).await;
+
     let clone_command = vec![
         "git".to_string(),
         "clone".to_string(),
