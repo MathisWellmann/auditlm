@@ -28,8 +28,10 @@
             ];
             targets = ["x86_64-unknown-linux-gnu"];
           });
-        buildInputs = [
+        buildInputs = with pkgs; [
           rust
+          openssl
+          pkg-config
         ];
         rust_tools = with pkgs; [
           cargo-nextest
