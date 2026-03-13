@@ -13,7 +13,7 @@ use http::header::AUTHORIZATION;
 use rmcp_openapi::Server;
 use std::env;
 use std::time::Instant;
-use tracing::{info, warn};
+use tracing::info;
 use url::Url;
 
 use crate::commands::forgejo::error::ForgejoError;
@@ -321,8 +321,20 @@ pub async fn clone_repository(
     owner: &str,
     repository: &str,
     container_manager: &ContainerManager,
+    token: &str,
 ) -> Result<(), ForgejoError> {
-    let repo_url = format!("{}/{}/{}.git", forgejo_url, owner, repository);
+    let mut url =
+        Url::parse(forgejo_url).map_err(|e| ForgejoError::Configuration(e.to_string()))?;
+    url.set_username("")
+        .map_err(|_| ForgejoError::Configuration("Unable to set username in URL".to_string()))?;
+    url.set_password(Some(token))
+        .map_err(|_| ForgejoError::Configuration("Unable to set password in URL".to_string()))?;
+    url.path_segments_mut()
+        .map_err(|_| ForgejoError::Repository("Unable to be base".to_string()))?
+        .push(owner)
+        .push(&format!("{}.git", repository));
+
+    let repo_url = url.into();
     println!("Cloning repository: {}", repo_url);
 
     // First, clean the workspace to ensure it's empty

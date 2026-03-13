@@ -50,6 +50,7 @@ impl ForgejoResourceManager {
             owner,
             repository,
             &container_manager,
+            &self.config.forgejo_token,
         )
         .await
     }
